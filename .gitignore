@@ -1,0 +1,17 @@
+# 환경 변수 및 보안 파일
+.env
+
+# 크롤링 결과 데이터 (bua_result로 시작하는 모든 json 파일 제외)
+bua_result_*.json
+
+# 파이썬 가상 환경
+venv/
+.venv/
+
+# 파이썬 컴파일 캐시
+__pycache__/
+*.pyc
+
+# (선택 사항) 운영체제 생성 파일
+.DS_Store
+Thumbs.db

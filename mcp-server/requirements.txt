@@ -1,0 +1,16 @@
+# MCP SDK
+mcp>=1.0.0
+
+# Web Crawler
+playwright>=1.40.0
+
+# Environment
+python-dotenv
+
+# HTTP API (optional)
+fastapi
+uvicorn[standard]
+
+# LLM APIs (for BUA)
+anthropic
+openai
