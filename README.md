@@ -6,11 +6,13 @@
 
 Samsung Research의 "Browser Use Agent 개발 여정" (김기훈)을 참고하여 구현한 LLM 기반 브라우저 자동화 에이전트입니다.
 
+> ⚠️ **개발 중**: 현재 개발 중인 프로젝트로 일부 기능이 불안정하거나 작동하지 않을 수 있습니다.
+
 | 항목 | 설명 |
 |------|------|
 | **방식** | DOM Snapshot + LLM 판단 (ReAct 패턴) |
 | **브라우저** | Playwright (headless=False로 실행 과정 확인 가능) |
-| **LLM** | Anthropic Claude API |
+| **LLM** | OpenAI GPT API |
 
 ---
 
@@ -39,7 +41,7 @@ mcp-server/
 | 구분 | book_crawler.py | bua/ |
 |------|-----------------|------|
 | **방식** | RPA (하드코딩 셀렉터) | AI Agent (LLM 판단) |
-| **LLM 필요** | ❌ | ✅ Anthropic API |
+| **LLM 필요** | ❌ | ✅ OpenAI API |
 | **범용성** | 충남대 도서관 전용 | 어떤 사이트든 가능 |
 | **유지보수** | 사이트 변경 시 코드 수정 | 프롬프트만 수정 |
 
@@ -65,7 +67,7 @@ playwright install chromium
 ### 3. API 키 설정
 
 ```powershell
-$env:ANTHROPIC_API_KEY = "sk-ant-api03-..."
+$env:OPENAI_API_KEY = "sk-proj-..."
 ```
 
 ### 4. CLI 실행
@@ -126,6 +128,8 @@ Start URL: https://library.cnu.ac.kr/
 
 ## 🔧 Claude Desktop 연동 (MCP)
 
+> ⚠️ **주의**: MCP 서버 기능은 현재 수정 중입니다.
+
 `%APPDATA%\Claude\claude_desktop_config.json`:
 
 ```json
@@ -135,14 +139,14 @@ Start URL: https://library.cnu.ac.kr/
       "command": "python",
       "args": ["C:\\cnu-library-rag-3\\mcp-server\\bua_server.py", "--mcp"],
       "env": {
-        "ANTHROPIC_API_KEY": "sk-ant-api03-..."
+        "OPENAI_API_KEY": "sk-proj-..."
       }
     }
   }
 }
 ```
 
-### BUA MCP Tools
+### BUA MCP Tools (수정 중)
 
 | Tool | 설명 |
 |------|------|
@@ -182,8 +186,8 @@ Start URL: https://library.cnu.ac.kr/
           ┌───────────────┴───────────────┐
           ▼                               ▼
    ┌────────────┐                  ┌────────────┐
-   │ Playwright │                  │ Anthropic  │
-   │ 브라우저   │                  │ Claude API │
+   │ Playwright │                  │   OpenAI   │
+   │ 브라우저   │                  │  GPT API   │
    └────────────┘                  └────────────┘
 ```
 
@@ -251,7 +255,7 @@ Start URL: https://library.cnu.ac.kr/
 
 | 항목 | 설명 |
 |------|------|
-| **API 비용** | 매 Step마다 Anthropic API 호출 |
+| **API 비용** | 매 Step마다 OpenAI API 호출 |
 | **속도** | LLM 응답 대기로 RPA보다 느림 |
 | **API 키 필수** | `browser_agent_run` 사용 시 필요 |
 | **브라우저 표시** | headless=False로 실행 과정 확인 가능 |
@@ -285,7 +289,7 @@ Start URL: https://library.cnu.ac.kr/
 
 ```powershell
 # 의존성 설치
-pip install playwright anthropic mcp
+pip install playwright openai mcp
 
 # 브라우저 설치
 playwright install chromium
