@@ -11,6 +11,10 @@ import json
 import sys
 import os
 
+# .env 파일 로드
+from dotenv import load_dotenv
+load_dotenv()
+
 # BUA 모듈 경로 추가
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -22,6 +26,7 @@ from bua import (
     SnapshotExtractor,
     snapshot_to_text
 )
+from bua.agent import init_langfuse
 
 
 # ----------------------------
@@ -35,6 +40,9 @@ async def get_agent() -> BrowserUseAgent:
     global agent_instance
     
     if agent_instance is None:
+        # Langfuse 초기화 (환경변수 있으면)
+        init_langfuse()
+        
         config = AgentConfig(
             headless=False,  # 브라우저 창 보이게!
             max_steps=20

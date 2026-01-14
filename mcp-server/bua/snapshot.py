@@ -42,6 +42,7 @@ class PageSnapshot:
     forms: List[Dict[str, Any]]
     page_type: str                # 페이지 유형 추정
     summary: str                  # 페이지 요약
+    page_text: str = ""           # 페이지 본문 텍스트 (정보 페이지용)
 
 
 class SnapshotExtractor:
@@ -64,10 +65,33 @@ class SnapshotExtractor:
     
     async def extract(self) -> PageSnapshot:
         """페이지 스냅샷 추출"""
+        import sys
+        
         self.element_index = 0
         
-        url = self.page.url
-        title = await self.page.title()
+        # 페이지 로딩 대기
+        try:
+            await self.page.wait_for_load_state("domcontentloaded", timeout=10000)
+        except Exception as e:
+            print(f"[Snapshot] Wait for load state: {e}", file=sys.stderr)
+        
+        # URL과 제목 가져오기 (에러 처리)
+        try:
+            url = self.page.url
+        except:
+            url = "unknown"
+        
+        try:
+            title = await self.page.title()
+        except Exception as e:
+            print(f"[Snapshot] Title error (navigation in progress?): {e}", file=sys.stderr)
+            title = "Loading..."
+            # 잠시 대기 후 재시도
+            await asyncio.sleep(1)
+            try:
+                title = await self.page.title()
+            except:
+                pass
         
         # 인터랙션 가능한 요소들 추출
         elements = await self._extract_interactive_elements()
@@ -81,13 +105,17 @@ class SnapshotExtractor:
         # 페이지 요약 생성
         summary = self._generate_summary(url, title, elements, forms)
         
+        # 페이지 본문 텍스트 추출 (정보 페이지용)
+        page_text = await self._extract_page_text()
+        
         return PageSnapshot(
             url=url,
             title=title,
             elements=elements,
             forms=forms,
             page_type=page_type,
-            summary=summary
+            summary=summary,
+            page_text=page_text
         )
     
     async def _extract_interactive_elements(self) -> List[ElementInfo]:
@@ -282,6 +310,58 @@ class SnapshotExtractor:
         ]
         
         return " | ".join(summary_parts)
+    
+    async def _extract_page_text(self) -> str:
+        """페이지 본문 텍스트 추출 (정보 페이지용)"""
+        try:
+            # 메인 컨텐츠 영역에서 텍스트 추출 시도
+            selectors = [
+                'main', 
+                '.content', 
+                '#content', 
+                '.main-content',
+                'article',
+                '.article',
+                '.page-content',
+                '.view-content',
+                '.board-view',
+                '.sub_content',
+                '.cont_area'
+            ]
+            
+            for selector in selectors:
+                try:
+                    element = await self.page.query_selector(selector)
+                    if element:
+                        text = await element.inner_text()
+                        if text and len(text.strip()) > 50:
+                            # 텍스트 정리 (너무 길면 자르기)
+                            text = text.strip()
+                            text = text.encode('utf-8', errors='replace').decode('utf-8')
+                            if len(text) > 3000:
+                                text = text[:3000] + "..."
+                            return text
+                except:
+                    continue
+            
+            # 위 셀렉터로 못 찾으면 body에서 추출
+            try:
+                body = await self.page.query_selector('body')
+                if body:
+                    text = await body.inner_text()
+                    text = text.strip()
+                    text = text.encode('utf-8', errors='replace').decode('utf-8')
+                    if len(text) > 3000:
+                        text = text[:3000] + "..."
+                    return text
+            except:
+                pass
+            
+            return ""
+        except Exception as e:
+            import sys
+            print(f"[Snapshot] Page text extraction error: {e}", file=sys.stderr)
+            return ""
 
 
 def snapshot_to_text(snapshot: PageSnapshot, max_elements: int = 50) -> str:
@@ -327,6 +407,12 @@ def snapshot_to_text(snapshot: PageSnapshot, max_elements: int = 50) -> str:
         lines.append("=== Forms ===")
         for form in snapshot.forms:
             lines.append(f"Form {form['index']}: action={form['action']}, fields={len(form['fields'])}")
+    
+    # 페이지 본문 텍스트 (정보 페이지용)
+    if snapshot.page_text:
+        lines.append("")
+        lines.append("=== Page Content (본문 텍스트) ===")
+        lines.append(snapshot.page_text)
     
     return "\n".join(lines)
 

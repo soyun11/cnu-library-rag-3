@@ -12,13 +12,51 @@ LLM 기반 브라우저 자동화 에이전트
 import asyncio
 import json
 import re
+import os
+import sys
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from playwright.async_api import async_playwright, Browser, Page, BrowserContext
 
+# .env 파일 로드
+from dotenv import load_dotenv
+load_dotenv()
+
 from .snapshot import SnapshotExtractor, PageSnapshot, snapshot_to_text
 from .tools import BrowserTools, Action, ActionResult, ActionType, parse_action_from_dict
+
+# Langfuse 추적 (선택적)
+LANGFUSE_AVAILABLE = False
+langfuse_client = None
+
+def init_langfuse():
+    """Langfuse 초기화 (최신 SDK v3 방식)"""
+    global LANGFUSE_AVAILABLE, langfuse_client
+    
+    public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
+    secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
+    base_url = os.environ.get("LANGFUSE_BASE_URL", "https://cloud.langfuse.com")
+    
+    if not public_key or not secret_key:
+        print("[Langfuse] API keys not set. Set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY", file=sys.stderr)
+        return None
+    
+    try:
+        # 환경변수 설정 (langfuse가 자동으로 읽음)
+        os.environ["LANGFUSE_HOST"] = base_url
+        
+        from langfuse import Langfuse
+        langfuse_client = Langfuse()
+        LANGFUSE_AVAILABLE = True
+        print(f"[Langfuse] Initialized successfully ({base_url})", file=sys.stderr)
+        return langfuse_client
+    except ImportError:
+        print("[Langfuse] langfuse package not installed. Run: pip install langfuse", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"[Langfuse] Initialization error: {e}", file=sys.stderr)
+        return None
 
 
 @dataclass
@@ -77,6 +115,10 @@ class BrowserUseAgent:
         self.page_summaries: List[PageSummary] = []
         self.current_goal: str = ""
         self.is_running: bool = False
+        
+        # Langfuse 추적
+        self.current_trace = None
+        self.langfuse = None
     
     async def initialize(self):
         """브라우저 초기화"""
@@ -121,8 +163,6 @@ class BrowserUseAgent:
         Returns:
             실행 결과
         """
-        import sys
-        
         if not self.browser:
             await self.initialize()
         
@@ -133,6 +173,9 @@ class BrowserUseAgent:
         self.is_running = True
         
         print(f"[Agent] Goal: {goal_clean}", file=sys.stderr)
+        
+        # Langfuse trace (generation만 사용 - trace는 SDK v3에서 다름)
+        self.current_trace = None  # trace 비활성화, generation만 사용
         
         # 시작 URL로 이동
         if start_url:
@@ -216,7 +259,7 @@ class BrowserUseAgent:
             await asyncio.sleep(1)
         
         # 최종 결과
-        return {
+        result = {
             "success": not self.is_running or step < self.config.max_steps,
             "goal": goal,
             "steps": step,
@@ -224,6 +267,13 @@ class BrowserUseAgent:
             "page_summaries": [asdict(s) for s in self.page_summaries],
             "final_url": self.page.url if self.page else ""
         }
+        
+        # Langfuse flush (generation은 openai_llm_callback에서 이미 기록됨)
+        if langfuse_client:
+            langfuse_client.flush()
+            print(f"[Langfuse] Data flushed", file=sys.stderr)
+        
+        return result
     
     async def _select_action(self, snapshot_text: str, step: int) -> Optional[Dict[str, Any]]:
         """LLM에게 다음 액션 질의"""
@@ -275,12 +325,20 @@ class BrowserUseAgent:
 ※ 로그인 불필요! 검색은 로그인 없이 가능!
 
 ### 로그인 요청인 경우 (예: "로그인해줘", 아이디/비밀번호 포함)
-1단계: 팝업 닫기 (a.infoClose)
-2단계: 로그인 페이지로 이동 (a[href='/login'] 클릭)
-3단계: 학번 입력 (input#id)
-4단계: 비밀번호 입력 (input[name='password'])
-5단계: Enter 키
-6단계: "로그아웃" 텍스트 확인되면 done
+1단계: 팝업 닫기 (a.infoClose) - 있으면
+2단계: 로그인 페이지로 이동 - 필요시
+3단계: 학번/아이디 입력 (input#id, input[name='user_id'], input[name='id'] 등)
+4단계: 비밀번호 입력 (input[name='password'], input[name='user_password'] 등)
+5단계: 로그인 버튼 클릭 (button[type='submit'], input[type='submit'], .login-btn 등) 또는 Enter
+6단계: 페이지 URL이 변경되었거나 "로그아웃" 텍스트가 보이면 done
+※ Enter 후에도 로그인 페이지면 → 로그인 버튼 직접 클릭 시도!
+※ 로그인 성공 확인: URL 변경, "로그아웃", "마이페이지", 사용자 이름 등
+
+### 층별 안내 요청인 경우 (예: "3층에 뭐 있어?", "열람실 어디야?", "북카페 위치", "운영시간")
+1단계: 시설 안내 페이지로 이동 (https://library.cnu.ac.kr/webcontent/info/326)
+2단계: 페이지 내용에서 해당 시설/층 정보 찾기
+3단계: 찾은 정보를 done으로 응답
+※ 시설 안내 페이지 URL: https://library.cnu.ac.kr/webcontent/info/326
 
 ### 대출/예약 요청인 경우
 - 로그인 필요 → 로그인 먼저 → 해당 작업 수행
@@ -290,6 +348,7 @@ class BrowserUseAgent:
 - 검색버튼: input.searchBtn
 - 로그인 폼: input#id (학번), input[name='password'] (비밀번호)
 - 팝업 닫기: a.infoClose
+- 시설안내 페이지: https://library.cnu.ac.kr/webcontent/info/326
 
 ## 사용 가능한 액션
 - click: 요소 클릭 {{"action": "click", "selector": "CSS셀렉터"}}
@@ -299,10 +358,12 @@ class BrowserUseAgent:
 - navigate: 페이지 이동 {{"action": "navigate", "value": "URL"}}
 
 ## 지시사항
-1. 목표를 먼저 파악하세요! "검색"이면 검색만, "로그인"이면 로그인만!
-2. 검색 요청이면: 검색창(input[name='q'])에 입력 → 검색버튼 또는 Enter → done
-3. 로그인 요청이면: 로그인 페이지 → ID입력 → PW입력 → Enter → done
-4. 이미 한 액션은 반복하지 마세요!
+1. 목표를 먼저 파악하세요! "검색"이면 검색만, "로그인"이면 로그인만, "층별/위치/운영시간"이면 시설안내 페이지!
+2. 층별 안내/시설 위치/운영시간 질문이면: https://library.cnu.ac.kr/webcontent/info/326 로 이동 → 정보 확인 → done
+3. 검색 요청이면: 검색창(input[name='q'])에 입력 → 검색버튼 또는 Enter → done
+4. 로그인 요청이면: ID입력 → PW입력 → 로그인 버튼 클릭 → URL 변경 확인 → done
+5. Enter 눌렀는데 아직 로그인 페이지면 → 로그인 버튼(button, input[type='submit']) 클릭!
+6. 이미 한 액션은 반복하지 마세요!
 
 ## 응답 형식 (JSON만 출력)
 {{"action": "액션명", "selector": "셀렉터(필요시)", "value": "값(필요시)", "reason": "이 액션을 선택한 이유"}}
@@ -391,9 +452,7 @@ class BrowserUseAgent:
 
 # Anthropic Claude API를 사용하는 LLM 콜백
 async def anthropic_llm_callback(prompt: str) -> str:
-    """Anthropic Claude API 호출"""
-    import os
-    import sys
+    """Anthropic Claude API 호출 + Langfuse 추적"""
     
     try:
         import anthropic
@@ -405,6 +464,15 @@ async def anthropic_llm_callback(prompt: str) -> str:
             api_key=os.environ.get("ANTHROPIC_API_KEY")
         )
         
+        # Langfuse generation 추적
+        generation = None
+        if langfuse_client:
+            generation = langfuse_client.generation(
+                name="anthropic-action-selection",
+                model="claude-sonnet-4-20250514",
+                input=prompt_clean[:500] + "..." if len(prompt_clean) > 500 else prompt_clean
+            )
+        
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=1024,
@@ -413,7 +481,20 @@ async def anthropic_llm_callback(prompt: str) -> str:
             ]
         )
         
-        return message.content[0].text
+        result = message.content[0].text
+        
+        # Langfuse generation 종료
+        if generation:
+            generation.end(
+                output=result,
+                usage={
+                    "input": message.usage.input_tokens,
+                    "output": message.usage.output_tokens,
+                    "total": message.usage.input_tokens + message.usage.output_tokens
+                }
+            )
+        
+        return result
         
     except ImportError:
         print("[Agent] anthropic package not installed", file=sys.stderr)
@@ -425,33 +506,38 @@ async def anthropic_llm_callback(prompt: str) -> str:
 
 # OpenAI API를 사용하는 LLM 콜백  
 async def openai_llm_callback(prompt: str) -> str:
-    """OpenAI API 호출"""
-    import os
-    import sys
+    """OpenAI API 호출 (Langfuse 자동 추적)"""
     
     try:
-        import openai
-        
         # 인코딩 문제 해결: surrogate 문자 제거
         prompt_clean = prompt.encode('utf-8', errors='replace').decode('utf-8')
+        
+        # Langfuse OpenAI wrapper 사용 (자동 추적)
+        if LANGFUSE_AVAILABLE:
+            from langfuse.openai import openai
+        else:
+            import openai
         
         client = openai.OpenAI(
             api_key=os.environ.get("OPENAI_API_KEY")
         )
         
         response = client.chat.completions.create(
+            name="bua-action-selection",  # Langfuse에서 보이는 이름
             model="gpt-4o",
             messages=[
                 {"role": "user", "content": prompt_clean}
             ],
-            max_tokens=1024
+            max_tokens=1024,
+            metadata={"agent": "bua", "type": "action_selection"}
         )
         
         return response.choices[0].message.content
         
-    except ImportError:
-        print("[Agent] openai package not installed", file=sys.stderr)
-        return '{"action": "wait", "value": "2", "reason": "LLM not configured"}'
+    except ImportError as e:  # 'as e' 추가
+            print(f"[Agent] ImportError details: {e}", file=sys.stderr)  # 진짜 에러 내용 출력
+            print(f"[Agent] Search paths: {sys.path}", file=sys.stderr) # 파이썬 경로 확인
+            return '{"action": "wait", "value": "2", "reason": "Import Error"}'
     except Exception as e:
         print(f"[Agent] OpenAI API error: {e}", file=sys.stderr)
         return '{"action": "wait", "value": "2", "reason": "API error"}'
